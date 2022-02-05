@@ -6,12 +6,14 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract marketERC1155 is Ownable {
 
-    event Listing(
+    event Transfer(
         address indexed from,
         address indexed to,
         uint256 id,
         uint256 amount
     );
+
+    event StagedListing(address indexed operator, uint256 indexed id);
 
     event CancelledListing(address indexed owner, uint256 indexed id);
 
@@ -19,11 +21,13 @@ contract marketERC1155 is Ownable {
 
 
     uint256 public _totalAssets;
-    mapping(address => bool) private _listingApproved;
-    mapping(address => bool) private _canMint;
-    mapping(uint256 => mapping(address => uint256)) private _balances;
+    mapping(address => mapping(uint256 => uint256)) private _balances;
 
+    mapping(address => bool) private _canMint;
+    mapping(uint256 => bool) private _listApproved;
     mapping(uint256 => bool) private _listed;
+    mapping(uint256 => uint256) private _listedAmt;
+
     mapping(address => uint256) private _assetOwner;
 
     constructor() {
@@ -51,32 +55,52 @@ contract marketERC1155 is Ownable {
         }
     }
 
-    //Approved addresses can mint an asset
-    function newListing(uint256 id, uint256 amount) public isApproved {
-        _balances[id][msg.sender] += amount;
+    function stageListing(uint256 id) public {
+        emit StagedListing(msg.sender, id);
         _assetOwner[msg.sender] = id;
-
-        emit Listing(address(this), msg.sender, id, amount);
-
-        _listed[id] = true;
-        _totalAssets++;
     }
 
+    //Approved addresses can mint an asset
+    function newListing(uint256 id, uint256 amount) public isApproved {
+        require(_listApproved[id] == true, "Pending admin approval for listing");
+        _balances[msg.sender][id] += amount;
+
+        emit Transfer(address(this), msg.sender, id, amount);
+
+        _listed[id] = true;
+        _totalAssets += amount;
+        _listedAmt[id] = amount;
+    }
+
+    //cancel listing is possible if pending approval from admins/org
     function cancelListing(uint256 id) public {
-        require(assetOwner(msg.sender, id) != false);
+        require(assetOwner(msg.sender, id) == true);
+        require(_listApproved[id] == false, "Asset is listed");
         _listed[id] = false;
+        _totalAssets -= _listedAmt[id];
 
         emit CancelledListing(msg.sender, id);
     }
 
-    function buyAsset(uint256 id, address from, uint256 amount) public {
+    function transferAsset(uint256 id, address from, address to, uint256 amount) public {
+        require(to != address(0), "ERC1155: balance query for the zero address");
         require(_listed[id] == true, "Asset not listed");
-        _balances[id][from] += amount;
+        require(assetOwner(msg.sender, id) != false || isOwner(msg.sender));
+        _balances[from][id] -= amount;
+        
+        if(_balances[from][id] <= 0) {
+            delete _assetOwner[from];
+        }
+
+        _balances[to][id] += amount;
+        _assetOwner[to] = id;
+
+        emit Transfer(from, to, id, amount);
     }
 
     function balanceOf(address wallet, uint256 id) public view returns (uint256) {
         require(wallet != address(0), "ERC1155: balance query for the zero address");
-        return _balances[id][wallet];
+        return _balances[wallet][id];
     }
 
     function approveMint(address wallet) public onlyOwner {
@@ -84,6 +108,10 @@ contract marketERC1155 is Ownable {
 
         address contractOwner = owner();
         emit Approval(contractOwner, wallet, true);
+    }
+
+    function approveListing(uint256 id) public onlyOwner {
+        _listApproved[id] = true;
     }
 
     modifier isApproved {
